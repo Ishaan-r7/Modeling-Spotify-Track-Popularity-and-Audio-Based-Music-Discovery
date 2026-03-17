@@ -1,0 +1,202 @@
+---
+title: "AMS597_Group-2"
+author: "Ishaan Reddy, Krupesh Rajendrakumar Desai, Tan Thien Huynh"
+date: "2026-03-15"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Data Preprocessing
+
+```{r}
+data_spotify <- read.csv("/Users/ishaa/Documents/SBU/SBU_Sem-2/Stats Computing/Project/dataset.csv")
+head(data_spotify)
+```
+
+
+```{r}
+print("Structure and Data Types:")
+str(data_spotify)
+```
+
+
+
+
+```{r}
+#Check if any columns have null values
+colSums(is.na(data_spotify))
+```
+
+
+
+```{r}
+#Convert the duration from ms to s
+data_spotify$duration_s <- data_spotify$duration_ms / 1000
+
+# Drop the original duration_ms column
+data_spotify$duration_ms <- NULL
+
+# Convert Explicit column to Boolean values from chr
+data_spotify$explicit <- as.logical(data_spotify$explicit)
+
+#Drop index column
+data_spotify$X <- NULL
+
+head(data_spotify)
+```
+
+```{r}
+sum(duplicated(data_spotify$track_id))
+```
+
+
+```{r}
+# Merge rows by track_id, combining genres into a single comma-separated string
+data_spotify_merged <- aggregate(track_genre ~ track_id + track_name + artists + 
+                                   album_name + popularity + duration_s + explicit + 
+                                   danceability + energy + key + loudness + mode + 
+                                   speechiness + acousticness + instrumentalness + 
+                                   liveness + valence + tempo + time_signature, 
+                                 data = data_spotify, 
+                                 FUN = function(x) paste(sort(unique(x)), collapse = ", "))
+
+# Verify
+nrow(data_spotify_merged) 
+```
+
+```{r}
+print("Summary Statistics:")
+summary(data_spotify_merged)
+```
+
+
+```{r}
+# Boxplots to visualize outliers
+par(mfrow = c(2, 3))
+boxplot(data_spotify_merged$popularity,   main = "Popularity")
+boxplot(data_spotify_merged$duration_s,  main = "Duration")
+boxplot(data_spotify_merged$loudness,     main = "Loudness")
+boxplot(data_spotify_merged$tempo,        main = "Tempo")
+boxplot(data_spotify_merged$speechiness,  main = "Speechiness")
+boxplot(data_spotify_merged$liveness,     main = "Liveness")
+```
+
+
+```{r}
+# Check extreme durations
+range(data_spotify_merged$duration_s)
+
+# How many songs are over 10 minutes (600 seconds) and equal to 0 seconds?
+sum(data_spotify_merged$duration_s > 600)
+sum(data_spotify_merged$duration_s == 0)
+```
+
+```{r}
+# Check extreme loudness
+range(data_spotify_merged$loudness)
+
+# How many songs below -35 dB?
+sum(data_spotify_merged$loudness < -35)
+```
+
+
+```{r}
+# How many songs with tempo of 0?
+sum(data_spotify_merged$tempo == 0)
+```
+
+
+#Remove outliers from the data_spotify_merged from columns duration_s, loudness and tempo. It is because of the following reasons mentioned below:
+#1. 551 songs were over 600 seconds and 1 song equal to 0, which is unusual for an avg song.
+#2. 191 songs were under -35 dB which is real silence and doesn't depict a song.
+#3. 157 songs has 0 tempo (Beat per minute). It is impossible to have a song with 0 beats.
+
+
+```{r}
+#Data cleaning based on the above explanation
+data_spotify_clean <- data_spotify_merged[
+  data_spotify_merged$duration_s > 0 &
+  data_spotify_merged$duration_s <= 600 &
+  data_spotify_merged$loudness >= -35 &
+  data_spotify_merged$tempo != 0, 
+]
+
+# Verify
+nrow(data_spotify_merged)  # Count before
+nrow(data_spotify_clean)   # Count after
+```
+
+
+
+```{r}
+#Summary of cleaned data
+summary(data_spotify_clean)
+```
+
+
+```{r}
+install.packages("corrplot")
+library(corrplot)
+```
+
+
+
+```{r}
+#1. Distribution of popularity
+hist(data_spotify_clean$popularity, main = "Distribution of Popularity", 
+     xlab = "Popularity", ylab = "Count" ,col = "steelblue")
+
+#2. Top 10 most common genres
+genre_counts <- sort(table(data_spotify_clean$track_genre), decreasing = TRUE)
+top10 <- head(genre_counts, 10)
+
+barplot(top10, main = "Top 10 Genres", 
+        xlab = "Genre", ylab = "Count", col = "steelblue", las = 2,
+        ylim = c(900, max(top10)))
+
+#3. Explicit vs Non-Explicit
+table(data_spotify_clean$explicit)
+pie(table(data_spotify_clean$explicit), main = "Explicit vs Non-Explicit", 
+    col = c("steelblue", "tomato"))
+
+#4. Correlation between numeric features
+numeric_cols <- data_spotify_clean[, c("popularity", "duration_s", "danceability", 
+                                        "energy", "loudness", "speechiness", 
+                                        "acousticness", "instrumentalness", 
+                                        "liveness", "valence", "tempo")]
+cor_matrix <- cor(numeric_cols)
+
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, tl.col = "black", 
+         addCoef.col = "black", number.cex = 0.7,
+         title = "Correlation Matrix", mar = c(0,0,1,0))
+
+#5. Scatter plot - Energy vs Loudness
+plot(data_spotify_clean$energy, data_spotify_clean$loudness,
+     main = "Energy vs Loudness", xlab = "Energy", ylab = "Loudness",
+     col = "steelblue", pch = 20, alpha = 0.5)
+
+#6. Popularity by explicit
+boxplot(popularity ~ explicit, data = data_spotify_clean,
+        main = "Popularity by Explicit", xlab = "Explicit", ylab = "Popularity",
+        col = c("steelblue", "tomato"))
+```
+
+
+#Introduction & Objective
+This analysis uses the Spotify Tracks Dataset, publicly available on Kaggle, containing 114,000 tracks spanning 125 genres with 20 variables per observation. Each track includes metadata (track name, artist, album, genre), audio features (danceability, energy, loudness, speechiness, acousticness, instrumentalness, liveness, valence, tempo), and structural attributes (duration, key, mode, time signature, explicit content). The popularity variable is a Spotify-assigned score from 0 to 100 based on recent play counts. During preprocessing, duplicate track IDs were resolved by merging genre labels into a comma-separated list per track, reducing the dataset to 90,461 unique tracks. An additional 881 rows were removed due to invalid values — songs with zero or unrealistically long durations (>600 seconds), near-silent loudness (< -35 dB), and zero tempo — yielding a final cleaned dataset of 89,580 tracks. Exploratory analysis revealed that popularity is right-skewed with most tracks scoring low, approximately 91% of tracks are non-explicit, and notable correlations exist between energy & loudness (positive) and energy & acousticness (negative).
+
+This analysis addresses three distinct research questions:
+
+1. Predicting Popularity: Which audio features best predict a track's popularity? This is explored using regularized regression methods (Lasso and Ridge), leveraging the 11 continuous audio features as predictors and popularity as the response variable.
+
+2. Dimensionality Reduction: Can the 11 correlated audio features be reduced to a smaller set of meaningful dimensions? This is explored using Principal Component Analysis (PCA), motivated by the observed correlations between features such as energy, loudness, and acousticness.
+
+3. Unsupervised Clustering: Do natural groupings of tracks emerge purely from their audio profiles, and how well do these align with known genre labels? This is explored using clustering methods, evaluated against the track_genre variable.
+
