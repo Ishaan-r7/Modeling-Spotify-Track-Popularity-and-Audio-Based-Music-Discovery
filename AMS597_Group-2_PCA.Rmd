@@ -1,0 +1,81 @@
+---
+title: "AMS597_Group-2_PCA"
+author: "Ishaan Reddy, Krupesh Rajendrakumar Desai, Tan Thien Huynh"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+date: "2026-03-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Light Feature Engineering \
+## From the general script, we know that: \
+#### `energy` and `loudness` move together, \
+#### `energy` and `acousticness` tend to move in opposite directions. \
+
+## 1.1 Do not include `popularity` \
+Because popularity is not an audio characteristic. It is closer to an outcome or external label. \
+If we include popularity in PCA, then the components no longer represent “latent audio dimensions.” Instead, they become a mixture of: music properties and external market-driven variable. That blurs the interpretation. \
+
+## 1.2 Do not include `explicit` - binary \
+Standard PCA assumes continuous variables and is driven by variance structure. A binary variable contributes differently and can distort interpretation. Better use explicit after PCA \
+
+## 1.3 Do not include `key, mode, or time_signature` in the main PCA \
+Because their numbers do not represent true linear distance: the difference between key 1 and key 2 is not like the difference between loudness -5 and -4, mode is basically binary, time signature is discrete and categorical-like. So although they are stored as numbers, PCA would treat them as continuous magnitudes, which is not really correct. That does not make them useless. It just means they should be treated separately, or in a different kind of analysis.\
+```{r}
+# Main PCA variables
+pca_vars <- data_spotify_clean[, c(
+  "danceability", "energy", "loudness", "speechiness",
+  "acousticness", "instrumentalness", "liveness",
+  "valence", "tempo"
+)]
+
+# Optional extended PCA with duration
+pca_vars_ext <- data_spotify_clean[, c(
+  "danceability", "energy", "loudness", "speechiness",
+  "acousticness", "instrumentalness", "liveness",
+  "valence", "tempo", "duration_s"
+)]
+```
+## Why this set works well
+Because together they cover the main acoustic axes of a song: \
+rhythm and groove: danceability, tempo \
+intensity: energy, loudness \
+mood/affect: valence \
+organic vs synthetic/acoustic texture: acousticness, instrumentalness \
+speech/live presence: speechiness, liveness \
+
+# 2. PCA Input
+```{r}
+# Check structure of the chosen variables
+str(pca_vars)
+
+# Summary statistics for the PCA variables
+summary(pca_vars)
+
+# No missing values
+colSums(is.na(pca_vars))
+```
+Need to verify: \
+They are all numeric \
+They are on different scales \
+There are no missing values left \
+
+# 3. Checking distributions
+```{r}
+library(e1071)
+par(mfrow = c(3, 3))
+for (col in names(pca_vars)) {
+  hist(pca_vars[[col]],
+       main = col,
+       xlab = col,
+       col = "steelblue",
+       border = "white")
+}
+par(mfrow = c(1, 1))
+sapply(pca_vars, skewness, na.rm = TRUE)
+```
