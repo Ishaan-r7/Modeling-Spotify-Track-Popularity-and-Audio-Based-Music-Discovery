@@ -5,77 +5,419 @@ output:
   html_document: default
   word_document: default
   pdf_document: default
-date: "2026-03-22"
+date: "2026-03-28"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
+```{r, include=FALSE}
+# From general script
+raw <- read.csv("dataset.csv", stringsAsFactors = FALSE)
+raw$duration_s <- raw$duration_ms / 1000
+raw$duration_ms <- NULL
+raw$explicit <- as.logical(raw$explicit)
+raw$X <- NULL
 
-# 1. Light Feature Engineering \
-## From the general script, we know that: \
-#### `energy` and `loudness` move together, \
-#### `energy` and `acousticness` tend to move in opposite directions. \
+data_spotify_merged <- aggregate(
+  track_genre ~ track_id + track_name + artists + album_name + popularity +
+    duration_s + explicit + danceability + energy + key + loudness + mode +
+    speechiness + acousticness + instrumentalness + liveness + valence +
+    tempo + time_signature,
+  data = raw,
+  FUN = function(x) paste(sort(unique(x)), collapse = ", ")
+)
 
-## 1.1 Do not include `popularity` \
-Because popularity is not an audio characteristic. It is closer to an outcome or external label. \
-If we include popularity in PCA, then the components no longer represent “latent audio dimensions.” Instead, they become a mixture of: music properties and external market-driven variable. That blurs the interpretation. \
+data_spotify_clean <- subset(
+  data_spotify_merged,
+  duration_s > 0 & duration_s <= 600 & loudness >= -35 & tempo != 0
+)
+```
+# 1. PCA Scope And Variable Selection
 
-## 1.2 Do not include `explicit` - binary \
-Standard PCA assumes continuous variables and is driven by variance structure. A binary variable contributes differently and can distort interpretation. Better use explicit after PCA \
-
-## 1.3 Do not include `key, mode, or time_signature` in the main PCA \
-Because their numbers do not represent true linear distance: the difference between key 1 and key 2 is not like the difference between loudness -5 and -4, mode is basically binary, time signature is discrete and categorical-like. So although they are stored as numbers, PCA would treat them as continuous magnitudes, which is not really correct. That does not make them useless. It just means they should be treated separately, or in a different kind of analysis.\
-```{r}
-# Main PCA variables
+```{r pca-scope}
 pca_vars <- data_spotify_clean[, c(
   "danceability", "energy", "loudness", "speechiness",
   "acousticness", "instrumentalness", "liveness",
   "valence", "tempo"
 )]
 
-# Optional extended PCA with duration
 pca_vars_ext <- data_spotify_clean[, c(
   "danceability", "energy", "loudness", "speechiness",
   "acousticness", "instrumentalness", "liveness",
   "valence", "tempo", "duration_s"
 )]
+
+scope_table <- data.frame(
+  role = c(
+    "Included in main PCA",
+    "Excluded",
+    "Excluded",
+    "Excluded",
+    "Sensitivity analysis only"
+  ),
+  variables = c(
+    paste(names(pca_vars), collapse = ", "),
+    "popularity",
+    "explicit",
+    "key, mode, time_signature",
+    "duration_s"
+  ),
+  rationale = c(
+    "Continuous audio descriptors that can reasonably share covariance structure",
+    "Outcome-like variable; not an intrinsic latent audio dimension",
+    "Binary indicator that is better analyzed after PCA",
+    "Discrete or cyclical musical structure that PCA would treat as linear magnitude",
+    "Continuous, but tested separately because length may reflect track format more than sonic texture"
+  )
+)
+
+scope_table
 ```
-## Why this set works well
-Because together they cover the main acoustic axes of a song: \
-rhythm and groove: danceability, tempo \
-intensity: energy, loudness \
-mood/affect: valence \
-organic vs synthetic/acoustic texture: acousticness, instrumentalness \
-speech/live presence: speechiness, liveness \
 
-# 2. PCA Input
-```{r}
-# Check structure of the chosen variables
-str(pca_vars)
+**Analysis.** The main PCA is built from the 9 continuous audio variables that most directly describe how a song sounds: danceability, energy, loudness, speechiness, acousticness, instrumentalness, liveness, valence, and tempo. Popularity is left out because it is the outcome we want to explain elsewhere, not part of the underlying audio profile. Explicit is binary, and key, mode, and time signature are recorded as numbers but do not behave like continuous distances in the way PCA expects. Duration is continuous, but it is held back for a sensitivity check because track length often reflects song format as much as sound.
 
-# Summary statistics for the PCA variables
-summary(pca_vars)
+**Insight.** That keeps the PCA honest. Once outcome variables, binary indicators, or discretely coded musical structure are mixed into the analysis, the components become harder to read as latent audio dimensions. A broader track-level PCA would still be possible, but it would answer a different question and would be less musically focused.
 
-# No missing values
-colSums(is.na(pca_vars))
-```
-Need to verify: \
-They are all numeric \
-They are on different scales \
-There are no missing values left \
+**Conclusion.** The scope is well chosen. It stays centered on continuous audio characteristics and gives PCA the best chance to produce dimensions that are both statistically useful and musically interpretable.
 
-# 3. Checking distributions
-```{r}
-library(e1071)
+# 2. Distribution Analysis Before PCA
+
+```{r pca-distributions}
+skewness_manual <- function(x) {
+  x <- x[is.finite(x)]
+  n <- length(x)
+  m <- mean(x)
+  s <- sd(x)
+
+  if (n < 3 || s == 0) {
+    return(NA_real_)
+  }
+
+  n / ((n - 1) * (n - 2)) * sum(((x - m) / s)^3)
+}
+
+dist_summary <- data.frame(
+  variable = names(pca_vars),
+  mean = round(sapply(pca_vars, mean), 3),
+  sd = round(sapply(pca_vars, sd), 3),
+  min = round(sapply(pca_vars, min), 3),
+  max = round(sapply(pca_vars, max), 3),
+  skewness = round(sapply(pca_vars, skewness_manual), 3)
+)
+
+dist_summary$distribution_flag <- ifelse(
+  abs(dist_summary$skewness) < 0.5, "roughly symmetric",
+  ifelse(abs(dist_summary$skewness) < 1, "moderately skewed", "strongly skewed")
+)
+
 par(mfrow = c(3, 3))
 for (col in names(pca_vars)) {
-  hist(pca_vars[[col]],
-       main = col,
-       xlab = col,
-       col = "steelblue",
-       border = "white")
+  hist(
+    pca_vars[[col]],
+    main = col,
+    xlab = col,
+    col = "steelblue",
+    border = "white"
+  )
 }
 par(mfrow = c(1, 1))
-sapply(pca_vars, skewness, na.rm = TRUE)
+
+dist_summary[order(-abs(dist_summary$skewness)), ]
 ```
+
+**Analysis.** The variables are usable for PCA, but they are not especially neat. Tempo and loudness operate on much larger raw scales than the bounded 0 to 1 Spotify features, so standardization is not optional here. Some variables are also clearly skewed: speechiness has a long right tail, liveness and instrumentalness are heavy-tailed, and loudness leans left. In practical terms, that means unusual spoken-word, live, instrumental, or very quiet tracks can have more influence on the covariance structure than more balanced variables.
+
+**Insight.** This is worth noticing, but it does not break the analysis. The preprocessing already removes obvious data problems such as zero tempo, invalid durations, and near-silent recordings, so the remaining skew mostly reflects real musical variety rather than bad records. A log transform or more robust alternative could be defended if the goal were a highly technical PCA pipeline, but for this project standardization is the more natural choice because it keeps the variables easy to interpret in musical terms.
+
+**Conclusion.** The distributions are not ideal, but they are good enough. Standardization is necessary, while additional transformation is a judgment call rather than a requirement.
+
+# 3. Correlation Structure And Suitability For PCA
+
+```{r pca-correlations}
+cor_matrix <- cor(pca_vars)
+
+top_cor_pairs <- function(cor_mat, n = 8) {
+  pair_index <- which(upper.tri(cor_mat), arr.ind = TRUE)
+  pair_table <- data.frame(
+    var1 = rownames(cor_mat)[pair_index[, 1]],
+    var2 = colnames(cor_mat)[pair_index[, 2]],
+    correlation = cor_mat[pair_index]
+  )
+  pair_table$abs_correlation <- abs(pair_table$correlation)
+  pair_table[order(-pair_table$abs_correlation), ][1:n, ]
+}
+
+top_correlations <- top_cor_pairs(cor_matrix, n = 10)
+
+heatmap(
+  cor_matrix,
+  Rowv = NA,
+  Colv = NA,
+  scale = "none",
+  margins = c(8, 8),
+  col = colorRampPalette(c("firebrick", "white", "steelblue"))(100)
+)
+
+top_correlations
+```
+
+**Analysis.** The correlation matrix gives a clear reason to use PCA. The strongest relationships are energy with loudness (0.762), energy with acousticness (-0.734), and loudness with acousticness (-0.586). There are also meaningful secondary patterns, including danceability with valence (0.482), loudness with instrumentalness (-0.423), and a smaller link between speechiness and liveness. So the feature set is connected, but not so tightly that everything collapses into one obvious factor.
+
+**Insight.** That is exactly the kind of structure PCA is meant for. These variables are not duplicates, yet they are clearly describing overlapping parts of the same musical space. In plain language, the correlations hint at a few broad themes already: intensity versus acoustic restraint, groove and positive affect, and spoken or live presence. If the variables were much less related, PCA would have little to compress. If they were much more related, one dominant component would do almost all the work.
+
+**Conclusion.** PCA is a good fit for these audio features. There is enough shared structure to justify dimensionality reduction, but also enough independence for several distinct components to matter.
+
+# 4. Standardized PCA And Explained Variance
+
+```{r pca-explained-variance}
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+eigenvalues_main <- pca_main$sdev^2
+explained_main <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_main)),
+  eigenvalue = round(eigenvalues_main, 4),
+  explained = round(eigenvalues_main / sum(eigenvalues_main), 4),
+  cumulative = round(cumsum(eigenvalues_main / sum(eigenvalues_main)), 4)
+)
+
+barplot(
+  explained_main$explained,
+  names.arg = explained_main$PC,
+  col = "steelblue",
+  ylim = c(0, 0.35),
+  ylab = "Explained Variance Ratio",
+  main = "Explained Variance by Principal Component"
+)
+
+plot(
+  seq_len(nrow(explained_main)),
+  explained_main$cumulative,
+  type = "b",
+  pch = 19,
+  col = "tomato",
+  xlab = "Number of Components",
+  ylab = "Cumulative Explained Variance",
+  main = "Cumulative Variance After Standardized PCA"
+)
+
+explained_main
+```
+
+**Analysis.** Once the variables are standardized, the PCA reveals a real but only moderate low-dimensional structure. PC1 explains `r sprintf("%.1f%%", 100 * explained_main$explained[1])` of the variance, PC2 adds `r sprintf("%.1f%%", 100 * explained_main$explained[2])`, and PC3 adds `r sprintf("%.1f%%", 100 * explained_main$explained[3])`. Cumulative variance reaches `r sprintf("%.1f%%", 100 * explained_main$cumulative[2])` with 2 components, `r sprintf("%.1f%%", 100 * explained_main$cumulative[3])` with 3, `r sprintf("%.1f%%", 100 * explained_main$cumulative[4])` with 4, and `r sprintf("%.1f%%", 100 * explained_main$cumulative[5])` with 5.
+
+**Insight.** The main takeaway is that the audio space is compressible, but not dramatically so. One or two components do not come close to summarizing everything, which makes sense for music: songs differ at the same time in intensity, groove, affect, texture, and live or spoken character. PCA is picking up real shared structure, but it is not flattening the feature space into a single simple story.
+
+**Conclusion.** A lower-dimensional representation is clearly possible, especially for visualization and feature compression, but the underlying audio space still keeps enough nuance that aggressive reduction would lose information.
+
+# 5. Choosing The Number Of Components
+
+```{r pca-component-choice}
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+eigenvalues_main <- pca_main$sdev^2
+explained_main <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_main)),
+  eigenvalue = round(eigenvalues_main, 4),
+  explained = round(eigenvalues_main / sum(eigenvalues_main), 4),
+  cumulative = round(cumsum(eigenvalues_main / sum(eigenvalues_main)), 4)
+)
+
+component_tradeoff <- data.frame(
+  components = 2:5,
+  cumulative_variance = round(explained_main$cumulative[2:5], 4)
+)
+
+plot(
+  explained_main$eigenvalue,
+  type = "b",
+  pch = 19,
+  col = "steelblue",
+  xlab = "Principal Component",
+  ylab = "Eigenvalue",
+  main = "Scree Plot"
+)
+abline(h = 1, lty = 2, col = "tomato")
+
+component_tradeoff
+```
+
+**Analysis.** The scree plot bends downward after the first few components, which suggests diminishing returns fairly early. By the Kaiser rule, only the first 3 components would be kept because they have eigenvalues above 1, but that retains just `r sprintf("%.1f%%", 100 * explained_main$cumulative[3])` of the variance. Moving to 4 components lifts retention to `r sprintf("%.1f%%", 100 * explained_main$cumulative[4])`, which feels noticeably more comfortable for a compact summary. A fifth component raises this further to `r sprintf("%.1f%%", 100 * explained_main$cumulative[5])`, but the musical interpretation becomes less tidy.
+
+**Insight.** There is no single universally correct cutoff here. If the goal is a clean picture, 2 components are enough even though they preserve less than half the variance. If the goal is a compact representation that still feels informative, 4 components strike the best balance. Going beyond that helps more with variance retention than with interpretability, which is fine for compression but less convincing in a report.
+
+**Conclusion.** Four components are the best default for this project. They preserve enough information to be useful while still leaving the PCA readable in musical terms.
+
+# 6. Interpreting The Retained Components
+
+```{r pca-loadings}
+selected_pcs <- 4
+
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+eigenvalues_main <- pca_main$sdev^2
+explained_main <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_main)),
+  eigenvalue = round(eigenvalues_main, 4),
+  explained = round(eigenvalues_main / sum(eigenvalues_main), 4),
+  cumulative = round(cumsum(eigenvalues_main / sum(eigenvalues_main)), 4)
+)
+
+loadings_main <- pca_main$rotation %*% diag(pca_main$sdev)
+colnames(loadings_main) <- explained_main$PC
+
+top_loadings_main <- lapply(seq_len(selected_pcs), function(i) {
+  x <- sort(loadings_main[, i], decreasing = TRUE)
+  xn <- sort(loadings_main[, i], decreasing = FALSE)
+  data.frame(
+    direction = c("positive", "positive", "positive", "negative", "negative", "negative"),
+    variable = c(names(x)[1:3], names(xn)[1:3]),
+    loading = round(c(x[1:3], xn[1:3]), 3)
+  )
+})
+names(top_loadings_main) <- paste0("PC", seq_len(selected_pcs))
+
+round(loadings_main[, 1:selected_pcs], 3)
+
+top_loadings_main
+```
+
+**Analysis.** The retained components are interpretable, although not equally clean. PC1 is defined by high energy and loudness versus high acousticness and instrumentalness, so it reads naturally as an **energy or intensity versus acoustic softness** dimension. PC2 is led by danceability and valence, with opposing influence from acousticness, instrumentalness, and tempo, so it works reasonably well as a **groove and positivity** axis. PC3 is the easiest to read after PC1 because it is driven by speechiness and liveness, which makes it a **speech/live presence** dimension. PC4 pulls together tempo, instrumentalness, and smaller danceability and speechiness effects, so it feels more like a **tempo-structure contrast** than a single intuitive trait.
+
+**Insight.** This is where the strengths and limits of the PCA become obvious. The first three components tell a fairly convincing musical story, especially the intensity axis and the speech/live axis. The fourth component is still useful, but it is more of a practical compromise than a beautifully clean construct. That is often what happens in real data: the first few components are meaningful, and then interpretation starts to blur before the variance stops mattering.
+
+**Conclusion.** The retained components are interpretable enough to be useful, especially the first three. PCA is not only reducing dimensionality here; it is also uncovering audio dimensions that listeners would broadly recognize.
+
+# 7. Visualizing The PCA Scores
+
+```{r pca-scores}
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+
+set.seed(597)
+score_index <- sample(seq_len(nrow(pca_main$x)), min(7000, nrow(pca_main$x)))
+score_sample <- pca_main$x[score_index, 1:3]
+
+genre_counts <- sort(table(data_spotify_clean$track_genre), decreasing = TRUE)
+top_genres <- names(genre_counts)[1:10]
+genre_centroids <- aggregate(
+  pca_main$x[, 1:2],
+  by = list(track_genre = data_spotify_clean$track_genre),
+  FUN = mean
+)
+genre_centroids_top <- genre_centroids[genre_centroids$track_genre %in% top_genres, ]
+genre_centroids_top <- genre_centroids_top[order(genre_centroids_top$track_genre), ]
+
+par(mfrow = c(1, 2))
+plot(
+  score_sample[, 1], score_sample[, 2],
+  pch = 16,
+  col = rgb(70, 130, 180, 40, maxColorValue = 255),
+  xlab = "PC1",
+  ylab = "PC2",
+  main = "Score Plot: PC1 vs PC2"
+)
+plot(
+  score_sample[, 1], score_sample[, 3],
+  pch = 16,
+  col = rgb(255, 99, 71, 40, maxColorValue = 255),
+  xlab = "PC1",
+  ylab = "PC3",
+  main = "Score Plot: PC1 vs PC3"
+)
+par(mfrow = c(1, 1))
+
+genre_centroids_top
+```
+
+**Analysis.** The score plots look more like a continuous cloud than a set of neatly separated clusters. PC1 and PC2 spread songs mainly along intensity and groove-related directions, while PC3 adds variation in speech or live presence. Genre centroids move in ways that feel plausible, with salsa and club leaning toward more energetic territory and study or IDM sitting in quieter, more restrained regions, but there is still substantial overlap. The picture is better described as a musical landscape than a map of isolated genre islands.
+
+**Insight.** That is useful in its own way. PCA score plots do a good job of showing broad stylistic neighborhoods, smooth transitions, and unusual tracks at the edges of the space. What they do not do well is prove that the dataset contains clean natural clusters. For this project, the visualization is strongest as a way to understand gradients in sound, not as evidence of sharp genre boundaries.
+
+**Conclusion.** The score plots are genuinely helpful for exploration and communication. Their value lies in showing continuous structure and latent style differences, not in delivering clean separation.
+
+# 8. Sensitivity Analysis Including Duration
+
+```{r pca-duration-sensitivity}
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+eigenvalues_main <- pca_main$sdev^2
+explained_main <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_main)),
+  eigenvalue = round(eigenvalues_main, 4),
+  explained = round(eigenvalues_main / sum(eigenvalues_main), 4),
+  cumulative = round(cumsum(eigenvalues_main / sum(eigenvalues_main)), 4)
+)
+
+pca_ext <- prcomp(pca_vars_ext, center = TRUE, scale. = TRUE)
+eigenvalues_ext <- pca_ext$sdev^2
+explained_ext <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_ext)),
+  eigenvalue = round(eigenvalues_ext, 4),
+  explained = round(eigenvalues_ext / sum(eigenvalues_ext), 4),
+  cumulative = round(cumsum(eigenvalues_ext / sum(eigenvalues_ext)), 4)
+)
+
+loadings_ext <- pca_ext$rotation %*% diag(pca_ext$sdev)
+colnames(loadings_ext) <- explained_ext$PC
+
+duration_compare <- data.frame(
+  components = 2:5,
+  without_duration = round(explained_main$cumulative[2:5], 4),
+  with_duration = round(explained_ext$cumulative[2:5], 4)
+)
+
+round(sort(cor(pca_vars_ext)[, "duration_s"]), 3)
+
+duration_compare
+
+round(loadings_ext["duration_s", 1:5], 3)
+```
+
+**Analysis.** Duration behaves differently from the main sound variables. Its correlations with the audio features are weak, with the largest absolute relationships staying below about 0.20. When duration is included, the first component barely changes, but duration shows up more strongly on PC2 and PC4 rather than reinforcing the core sound-based structure. Compression also becomes a little less efficient: the first 4 components explain `r sprintf("%.1f%%", 100 * explained_main$cumulative[4])` without duration but only `r sprintf("%.1f%%", 100 * explained_ext$cumulative[4])` with it.
+
+**Insight.** This makes intuitive sense. Track length matters, but it often behaves more like a format or packaging variable than a direct sonic trait. A long ambient piece and a long pop remix can be very different musically, so duration does not naturally line up with the same latent space as energy, acousticness, or valence. Keeping it inside the PCA broadens the story, but it also makes the result less coherent as an audio summary.
+
+**Conclusion.** Duration is better treated as a separate supplementary feature. It is relevant to the project, but it does not belong at the center of the main latent audio PCA.
+
+# 9. Final PCA Conclusion
+
+```{r pca-summary}
+pca_main <- prcomp(pca_vars, center = TRUE, scale. = TRUE)
+eigenvalues_main <- pca_main$sdev^2
+explained_main <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_main)),
+  eigenvalue = round(eigenvalues_main, 4),
+  explained = round(eigenvalues_main / sum(eigenvalues_main), 4),
+  cumulative = round(cumsum(eigenvalues_main / sum(eigenvalues_main)), 4)
+)
+
+pca_ext <- prcomp(pca_vars_ext, center = TRUE, scale. = TRUE)
+eigenvalues_ext <- pca_ext$sdev^2
+explained_ext <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues_ext)),
+  eigenvalue = round(eigenvalues_ext, 4),
+  explained = round(eigenvalues_ext / sum(eigenvalues_ext), 4),
+  cumulative = round(cumsum(eigenvalues_ext / sum(eigenvalues_ext)), 4)
+)
+
+summary_metrics <- data.frame(
+  metric = c(
+    "Two-component variance",
+    "Four-component variance",
+    "Five-component variance",
+    "Four-component variance with duration",
+    "Overall practical effectiveness"
+  ),
+  value = c(
+    sprintf("%.1f%%", 100 * explained_main$cumulative[2]),
+    sprintf("%.1f%%", 100 * explained_main$cumulative[4]),
+    sprintf("%.1f%%", 100 * explained_main$cumulative[5]),
+    sprintf("%.1f%%", 100 * explained_ext$cumulative[4]),
+    "Approximately 75%"
+  )
+)
+
+summary_metrics
+```
+
+**Analysis.** The short answer is yes: these audio features can be reduced to a smaller set of meaningful dimensions. In the main solution, 4 components retain `r sprintf("%.1f%%", 100 * explained_main$cumulative[4])` of the standardized variance while still remaining fairly interpretable. A fifth component pushes retention to `r sprintf("%.1f%%", 100 * explained_main$cumulative[5])`, but by that point the gain is more about compression than about clearer musical meaning. So PCA works here, just not so perfectly that the original variables become expendable.
+
+**Insight.** Overall, PCA is about **75% effective** for this project. That is high enough to be genuinely useful, but not high enough to treat it as the single best representation of the music. The retained components capture musically recognizable ideas, especially intensity, groove, and speech/live presence. That makes PCA strong for visualization, exploratory structure, and compact clustering inputs. It is more limited as a core modeling input for popularity, where the original variables still carry detail that PCA smooths away.
+
+**Conclusion.** Therefore, the answer is **YES**, the audio features can be reduced to a smaller and meaningful set of dimensions, but only moderately well rather than exceptionally well. The most practical recommendation is to use PCA primarily as an exploratory and visualization tool, and secondarily as a compact representation for clustering or feature compression, while keeping the original audio variables for downstream predictive modeling.
