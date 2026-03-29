@@ -1,0 +1,167 @@
+---
+title: "AMS597_Group-2_Regression"
+author: "Ishaan Reddy"
+date: "2026-03-29"
+output: html_document
+---
+
+```{r}
+# Load data
+data_spotify <- read.csv("/Users/ishaa/Documents/SBU/SBU_Sem-2/Stats Computing/Project/dataset.csv")
+
+# Preprocessing
+data_spotify$duration_s <- data_spotify$duration_ms / 1000
+data_spotify$duration_ms <- NULL
+data_spotify$explicit <- as.logical(data_spotify$explicit)
+data_spotify$X <- NULL
+
+data_spotify_merged <- aggregate(track_genre ~ track_id + track_name + artists + 
+                                   album_name + popularity + duration_s + explicit + 
+                                   danceability + energy + key + loudness + mode + 
+                                   speechiness + acousticness + instrumentalness + 
+                                   liveness + valence + tempo + time_signature, 
+                                 data = data_spotify, 
+                                 FUN = function(x) paste(sort(unique(x)), collapse = ", "))
+
+data_spotify_clean <- data_spotify_merged[
+  data_spotify_merged$duration_s > 0 &
+  data_spotify_merged$duration_s <= 600 &
+  data_spotify_merged$loudness >= -35 &
+  data_spotify_merged$tempo != 0, 
+]
+```
+
+
+```{r}
+head(data_spotify_clean)
+
+#Plan:
+#Split data into train/test
+#Run Ridge regression → shows all features matter with shrinkage
+#Run Lasso regression → automatically drops unimportant features
+#Compare both using RMSE and R²
+#Plot coefficient paths and variable importance
+```
+
+
+```{r}
+# Load required libraries
+install.packages("glmnet")
+library(glmnet)
+```
+
+
+```{r}
+# Select predictors and response
+X <- model.matrix(popularity ~ danceability + energy + loudness + speechiness +
+                    acousticness + instrumentalness + liveness + valence +
+                    tempo + duration_s + explicit, 
+                  data = data_spotify_clean)[, -1]  # Remove intercept column
+
+y <- data_spotify_clean$popularity
+
+set.seed(42)
+train_idx <- sample(1:nrow(X), 0.8 * nrow(X))
+X_train <- X[train_idx, ]
+X_test  <- X[-train_idx, ]
+y_train <- y[train_idx]
+y_test  <- y[-train_idx]
+```
+
+
+
+```{r}
+# Ridge Regression
+set.seed(42)
+ridge_cv <- cv.glmnet(X_train, y_train, alpha = 0)
+best_lambda_ridge <- ridge_cv$lambda.min
+plot(ridge_cv)
+
+# Lasso Regression
+set.seed(42)
+lasso_cv <- cv.glmnet(X_train, y_train, alpha = 1)
+best_lambda_lasso <- lasso_cv$lambda.min
+plot(lasso_cv)
+```
+
+
+
+
+```{r}
+# Ridge predictions
+ridge_pred <- predict(ridge_cv, s = best_lambda_ridge, newx = X_test)
+ridge_rmse <- sqrt(mean((ridge_pred - y_test)^2))
+ridge_r2   <- 1 - sum((ridge_pred - y_test)^2) / sum((y_test - mean(y_test))^2)
+
+# Lasso predictions
+lasso_pred <- predict(lasso_cv, s = best_lambda_lasso, newx = X_test)
+lasso_rmse <- sqrt(mean((lasso_pred - y_test)^2))
+lasso_r2   <- 1 - sum((lasso_pred - y_test)^2) / sum((y_test - mean(y_test))^2)
+
+# Print results
+cat("Ridge - RMSE:", round(ridge_rmse, 4), " R²:", round(ridge_r2, 4), "\n")
+cat("Lasso - RMSE:", round(lasso_rmse, 4), " R²:", round(lasso_r2, 4), "\n")
+```
+
+
+```{r}
+# Ridge coefficients
+ridge_coef <- coef(ridge_cv, s = best_lambda_ridge)
+print("Ridge Coefficients:")
+print(ridge_coef)
+
+# Lasso coefficients
+lasso_coef <- coef(lasso_cv, s = best_lambda_lasso)
+print("Lasso Coefficients:")
+print(lasso_coef)
+```
+
+
+
+```{r}
+install.packages("xgboost")
+library(xgboost)
+```
+
+
+```{r}
+# XGBoost requires matrix format
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest  <- xgb.DMatrix(data = X_test,  label = y_test)
+
+set.seed(42)
+xgb_model <- xgboost(
+  x = X_train,
+  y = y_train,
+  nrounds = 200,
+  max_depth = 6,
+  learning_rate = 0.1,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  objective = "reg:squarederror"
+)
+```
+
+```{r}
+xgb_pred <- predict(xgb_model, newdata = X_test)
+xgb_rmse <- sqrt(mean((xgb_pred - y_test)^2))
+xgb_r2   <- 1 - sum((xgb_pred - y_test)^2) / sum((y_test - mean(y_test))^2)
+
+cat("XGBoost - RMSE:", round(xgb_rmse, 4), " R²:", round(xgb_r2, 4), "\n")
+```
+
+
+```{r}
+importance_matrix <- xgb.importance(model = xgb_model)
+xgb.plot.importance(importance_matrix, top_n = 11,
+                    main = "XGBoost Feature Importance")
+```
+**Interpretaion of findings and conclusion to the research question "Which audio features best predict a track's popularity?"**
+
+Research Question 1 asked which audio features best predict a track's popularity. We first applied Lasso and Ridge regression as baseline models, both yielding an R² of 0.03 and RMSE of 20.38, indicating that linear relationships between audio features and popularity are negligible. This motivated the use of XGBoost, a gradient boosting model capable of capturing non-linear patterns, which improved performance to an R² of 0.17 and RMSE of 18.86 — a five-fold improvement over the linear baselines.
+
+The XGBoost feature importance plot revealed that acousticness, duration, danceability, and instrumentalness were the strongest predictors of popularity, while explicit content contributed the least. Despite the improvement, the overall R² of 0.17 suggests that audio features alone have limited predictive power over popularity, which is expected — popularity is also heavily influenced by external factors such as artist recognition, marketing, and cultural trends that are not captured in audio-based features alone.
+
+
+
+
