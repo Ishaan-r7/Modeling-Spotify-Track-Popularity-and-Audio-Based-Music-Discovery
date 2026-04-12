@@ -6,8 +6,9 @@ output: html_document
 ---
 
 ```{r}
-# Load data
-data_spotify <- read.csv("/Users/ishaa/Documents/SBU/SBU_Sem-2/Stats Computing/Project/dataset.csv")
+library(here)
+# Load dataset
+data_spotify <- read.csv("./dataset.csv")
 
 # Preprocessing
 data_spotify$duration_s <- data_spotify$duration_ms / 1000
@@ -45,8 +46,6 @@ head(data_spotify_clean)
 
 
 ```{r}
-# Load required libraries
-install.packages("glmnet")
 library(glmnet)
 ```
 
@@ -119,7 +118,6 @@ print(lasso_coef)
 
 
 ```{r}
-install.packages("xgboost")
 library(xgboost)
 ```
 
@@ -161,7 +159,3 @@ xgb.plot.importance(importance_matrix, top_n = 11,
 Research Question 1 asked which audio features best predict a track's popularity. We first applied Lasso and Ridge regression as baseline models, both yielding an R² of 0.03 and RMSE of 20.38, indicating that linear relationships between audio features and popularity are negligible. This motivated the use of XGBoost, a gradient boosting model capable of capturing non-linear patterns, which improved performance to an R² of 0.17 and RMSE of 18.86 — a five-fold improvement over the linear baselines.
 
 The XGBoost feature importance plot revealed that acousticness, duration, danceability, and instrumentalness were the strongest predictors of popularity, while explicit content contributed the least. Despite the improvement, the overall R² of 0.17 suggests that audio features alone have limited predictive power over popularity, which is expected — popularity is also heavily influenced by external factors such as artist recognition, marketing, and cultural trends that are not captured in audio-based features alone.
-
-
-
-

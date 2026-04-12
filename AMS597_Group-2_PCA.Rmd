@@ -11,7 +11,11 @@ date: "2026-03-28"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
+
+
 ```{r, include=FALSE}
+library(here)
+
 # From general script
 raw <- read.csv("dataset.csv", stringsAsFactors = FALSE)
 raw$duration_s <- raw$duration_ms / 1000
@@ -33,6 +37,7 @@ data_spotify_clean <- subset(
   duration_s > 0 & duration_s <= 600 & loudness >= -35 & tempo != 0
 )
 ```
+
 # 1. PCA Scope And Variable Selection
 
 ```{r pca-scope}
@@ -80,6 +85,7 @@ scope_table
 **Insight.** That keeps the PCA honest. Once outcome variables, binary indicators, or discretely coded musical structure are mixed into the analysis, the components become harder to read as latent audio dimensions. A broader track-level PCA would still be possible, but it would answer a different question and would be less musically focused.
 
 **Conclusion.** The scope is well chosen. It stays centered on continuous audio characteristics and gives PCA the best chance to produce dimensions that are both statistically useful and musically interpretable.
+
 
 # 2. Distribution Analysis Before PCA
 
@@ -132,6 +138,7 @@ dist_summary[order(-abs(dist_summary$skewness)), ]
 
 **Conclusion.** The distributions are not ideal, but they are good enough. Standardization is necessary, while additional transformation is a judgment call rather than a requirement.
 
+
 # 3. Correlation Structure And Suitability For PCA
 
 ```{r pca-correlations}
@@ -167,6 +174,7 @@ top_correlations
 **Insight.** That is exactly the kind of structure PCA is meant for. These variables are not duplicates, yet they are clearly describing overlapping parts of the same musical space. In plain language, the correlations hint at a few broad themes already: intensity versus acoustic restraint, groove and positive affect, and spoken or live presence. If the variables were much less related, PCA would have little to compress. If they were much more related, one dominant component would do almost all the work.
 
 **Conclusion.** PCA is a good fit for these audio features. There is enough shared structure to justify dimensionality reduction, but also enough independence for several distinct components to matter.
+
 
 # 4. Standardized PCA And Explained Variance
 
@@ -209,6 +217,7 @@ explained_main
 
 **Conclusion.** A lower-dimensional representation is clearly possible, especially for visualization and feature compression, but the underlying audio space still keeps enough nuance that aggressive reduction would lose information.
 
+
 # 5. Choosing The Number Of Components
 
 ```{r pca-component-choice}
@@ -245,6 +254,7 @@ component_tradeoff
 **Insight.** There is no single universally correct cutoff here. If the goal is a clean picture, 2 components are enough even though they preserve less than half the variance. If the goal is a compact representation that still feels informative, 4 components strike the best balance. Going beyond that helps more with variance retention than with interpretability, which is fine for compression but less convincing in a report.
 
 **Conclusion.** Four components are the best default for this project. They preserve enough information to be useful while still leaving the PCA readable in musical terms.
+
 
 # 6. Interpreting The Retained Components
 
@@ -284,6 +294,7 @@ top_loadings_main
 **Insight.** This is where the strengths and limits of the PCA become obvious. The first three components tell a fairly convincing musical story, especially the intensity axis and the speech/live axis. The fourth component is still useful, but it is more of a practical compromise than a beautifully clean construct. That is often what happens in real data: the first few components are meaningful, and then interpretation starts to blur before the variance stops mattering.
 
 **Conclusion.** The retained components are interpretable enough to be useful, especially the first three. PCA is not only reducing dimensionality here; it is also uncovering audio dimensions that listeners would broadly recognize.
+
 
 # 7. Visualizing The PCA Scores
 
@@ -332,6 +343,7 @@ genre_centroids_top
 
 **Conclusion.** The score plots are genuinely helpful for exploration and communication. Their value lies in showing continuous structure and latent style differences, not in delivering clean separation.
 
+
 # 8. Sensitivity Analysis Including Duration
 
 ```{r pca-duration-sensitivity}
@@ -374,6 +386,7 @@ round(loadings_ext["duration_s", 1:5], 3)
 **Insight.** This makes intuitive sense. Track length matters, but it often behaves more like a format or packaging variable than a direct sonic trait. A long ambient piece and a long pop remix can be very different musically, so duration does not naturally line up with the same latent space as energy, acousticness, or valence. Keeping it inside the PCA broadens the story, but it also makes the result less coherent as an audio summary.
 
 **Conclusion.** Duration is better treated as a separate supplementary feature. It is relevant to the project, but it does not belong at the center of the main latent audio PCA.
+
 
 # 9. Final PCA Conclusion
 
@@ -421,3 +434,209 @@ summary_metrics
 **Insight.** Overall, PCA is about **75% effective** for this project. That is high enough to be genuinely useful, but not high enough to treat it as the single best representation of the music. The retained components capture musically recognizable ideas, especially intensity, groove, and speech/live presence. That makes PCA strong for visualization, exploratory structure, and compact clustering inputs. It is more limited as a core modeling input for popularity, where the original variables still carry detail that PCA smooths away.
 
 **Conclusion.** Therefore, the answer is **YES**, the audio features can be reduced to a smaller and meaningful set of dimensions, but only moderately well rather than exceptionally well. The most practical recommendation is to use PCA primarily as an exploratory and visualization tool, and secondarily as a compact representation for clustering or feature compression, while keeping the original audio variables for downstream predictive modeling.
+
+
+
+
+
+
+# Predicting Popularity With PCA-Based Audio Features (PCA Regression)
+
+## Why PC Scores Are The Proper PCA Input
+
+- PC1-PC4 is the best PCA choice because it keeps the component structure intact while retaining enough variance for a compact, interpretable model. 
+- Each PC score already combines positive and negative loadings into one contrast, so splitting loadings would break the PCA meaning and make the regression less consistent.
+
+```{r pca-regression-setup}
+pca_audio_features <- c(
+  "danceability", "energy", "loudness", "speechiness",
+  "acousticness", "instrumentalness", "liveness",
+  "valence", "tempo"
+)
+
+pca_model_data <- data_spotify_clean[, c("popularity", pca_audio_features, "duration_s")]
+
+set.seed(597)
+train_index <- sample(
+  seq_len(nrow(pca_model_data)),
+  size = floor(0.8 * nrow(pca_model_data))
+)
+
+train_data <- pca_model_data[train_index, ]
+test_data <- pca_model_data[-train_index, ]
+
+pca_train <- prcomp(
+  train_data[, pca_audio_features],
+  center = TRUE,
+  scale. = TRUE
+)
+
+train_scores_all <- as.data.frame(pca_train$x)
+test_scores_all <- as.data.frame(
+  predict(pca_train, newdata = test_data[, pca_audio_features])
+)
+
+train_scores <- as.data.frame(train_scores_all[, 1:4])
+test_scores <- as.data.frame(test_scores_all[, 1:4])
+
+train_scores$popularity <- train_data$popularity
+test_scores$popularity <- test_data$popularity
+
+head(train_scores)
+```
+
+**Analysis.** This setup uses the same PCA variables from the PCA report: danceability, energy, loudness, speechiness, acousticness, instrumentalness, liveness, valence, and tempo. Popularity remains the response, while duration stays separate because it reflects track format more than sound.
+
+**Insight.** Fitting PCA only on the training data is important because it avoids letting information from the test set influence the components. The test songs are then projected into the same PCA space. This makes the regression comparison fairer and closer to how the model would behave on new tracks.
+
+**Conclusion.** PCA scores are appropriate inputs for compact models. The trial stage should still compare them against original variables to see which predicts popularity better.
+
+
+```{r pca-regression-model}
+pca_lm <- lm(
+  popularity ~ PC1 + PC2 + PC3 + PC4,
+  data = train_scores
+)
+
+pca_predictions <- predict(pca_lm, newdata = test_scores)
+
+regression_metrics <- function(actual, predicted) {
+  data.frame(
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    MAE = mean(abs(actual - predicted)),
+    R_squared = 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  )
+}
+
+pca_metrics <- regression_metrics(
+  actual = test_scores$popularity,
+  predicted = pca_predictions
+)
+
+pca_metrics
+```
+
+**Analysis.** This model predicts popularity using only the first four PCA scores, which summarize about 72% of standardized audio-feature variance. Instead of testing individual features, it tests whether broader audio dimensions help explain popularity.
+
+**Insight.** The PCA model is compact, but compact does not mean stronger prediction. It is useful for testing broad audio dimensions, while detailed feature-level effects are better handled by regularized models.
+
+**Conclusion.** The PCA regression is a useful compact benchmark, but it should not be the main popularity model. It is best used to test whether broad audio dimensions carry predictive signal.
+
+
+```{r pca-vs-original-regression}
+suppressPackageStartupMessages(library(glmnet))
+
+# Common test metrics: lower RMSE/MAE is better; higher R-squared is better.
+regression_metrics <- function(actual, predicted) {
+  data.frame(
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    MAE = mean(abs(actual - predicted)),
+    R_squared = 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  )
+}
+
+# Original audio model keeps feature-level information for prediction.
+original_audio_features <- c(pca_audio_features, "duration_s")
+x_train_original <- as.matrix(train_data[, original_audio_features])
+x_test_original <- as.matrix(test_data[, original_audio_features])
+y_train <- train_data$popularity
+y_test <- test_data$popularity
+
+# PCA benchmark uses the interpretable 4-component solution from the PCA report.
+pca_lm <- lm(
+  popularity ~ PC1 + PC2 + PC3 + PC4,
+  data = train_scores
+)
+pca_predictions <- predict(pca_lm, newdata = test_scores)
+pca_linear_metrics <- regression_metrics(
+  actual = test_scores$popularity,
+  predicted = pca_predictions
+)
+
+# Ridge and Lasso use cross-validation to choose the regularization strength.
+set.seed(597)
+ridge_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 0,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+set.seed(597)
+lasso_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 1,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+ridge_predictions <- as.numeric(
+  predict(ridge_cv, newx = x_test_original, s = "lambda.min")
+)
+lasso_predictions <- as.numeric(
+  predict(lasso_cv, newx = x_test_original, s = "lambda.min")
+)
+
+model_comparison <- data.frame(
+  model = c("PCA linear benchmark", "Ridge original audio", "Lasso original audio"),
+  input_set = c(
+    "PC1-PC4",
+    "Original audio features + duration",
+    "Original audio features + duration"
+  ),
+  rbind(
+    pca_linear_metrics,
+    regression_metrics(y_test, ridge_predictions),
+    regression_metrics(y_test, lasso_predictions)
+  )
+)
+
+model_comparison
+```
+
+**Analysis.** The useful comparison is PC1-PC4 versus Ridge and Lasso on original variables. PC1-PC8 was not kept because it uses nearly the full PCA space and no longer represents meaningful reduction.
+
+**Insight.** Ridge and Lasso perform better because they keep feature-level detail and tune shrinkage through cross-validation. PCA is cleaner for summary, but PC1-PC4 loses predictive information.
+
+**Conclusion.** Use Lasso as the main prediction model, Ridge as a stable comparison, and PC1-PC4 only as a compact PCA benchmark. A fold-sensitivity check with 3, 5, and 10 folds gave the same rounded results.
+
+
+```{r lasso-selected-features}
+set.seed(597)
+lasso_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 1,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+lasso_coefficients <- coef(lasso_cv, s = "lambda.min")
+selected_lasso_features <- data.frame(
+  feature = rownames(lasso_coefficients),
+  coefficient = as.numeric(lasso_coefficients)
+)
+selected_lasso_features <- selected_lasso_features[
+  selected_lasso_features$coefficient != 0,
+]
+selected_lasso_features$coefficient <- round(
+  selected_lasso_features$coefficient,
+  4
+)
+
+selected_lasso_features
+```
+
+**Analysis.** The Lasso output identifies which original variables remain after regularization. These selected coefficients answer the main research question more directly than PCA because each coefficient still maps to a specific audio feature.
+
+**Insight.** Lasso is easier to interpret than Ridge for feature selection because it can shrink weak predictors exactly to zero. Ridge keeps all variables but stabilizes their effects.
+
+**Conclusion.** Use Lasso to discuss the strongest individual predictors, Ridge for stable prediction, and PCA only as a compact audio-dimension comparison.
+
+## 1. Which Audio Features Best Predict Popularity?
+
+- The strongest audio predictors are instrumentalness, valence, danceability, speechiness, and loudness.
+- Danceability and loudness have positive relationships with predicted popularity, while instrumentalness, valence, and speechiness have negative relationships. However, the best model explains only about 3.3% of popularity variation, so audio features alone are weak predictors.
+
