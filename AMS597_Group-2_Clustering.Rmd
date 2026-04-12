@@ -1,0 +1,263 @@
+---
+title: "AMS597 Group 2 - Clustering Analysis"
+output: pdf_document
+date: "2026-04-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Preprocessing
+
+```{r}
+data_spotify <- read.csv("dataset.csv")
+head(data_spotify)
+```
+
+
+
+
+```{r}
+print("Structure and Data Types:")
+str(data_spotify)
+```
+
+
+```{r}
+#Check if any columns have null values
+colSums(is.na(data_spotify))
+```
+
+
+```{r}
+#Convert the duration from ms to s
+data_spotify$duration_s <- data_spotify$duration_ms / 1000
+
+# Drop the original duration_ms column
+data_spotify$duration_ms <- NULL
+
+# Convert Explicit column to Boolean values from chr
+data_spotify$explicit <- as.logical(data_spotify$explicit)
+
+#Drop index column
+data_spotify$X <- NULL
+
+head(data_spotify)
+```
+
+```{r}
+sum(duplicated(data_spotify$track_id))
+```
+
+```{r}
+# Merge rows by track_id, combining genres into a single comma-separated string
+data_spotify_merged <- aggregate(track_genre ~ track_id + track_name + artists + 
+                                   album_name + popularity + duration_s + explicit + 
+                                   danceability + energy + key + loudness + mode + 
+                                   speechiness + acousticness + instrumentalness + 
+                                   liveness + valence + tempo + time_signature, 
+                                 data = data_spotify, 
+                                 FUN = function(x) paste(sort(unique(x)), collapse = ", "))
+
+# Verify
+nrow(data_spotify_merged) 
+```
+
+```{r}
+print("Summary Statistics:")
+summary(data_spotify_merged)
+```
+
+```{r}
+# Boxplots to visualize outliers
+par(mfrow = c(2, 3))
+boxplot(data_spotify_merged$popularity,   main = "Popularity")
+boxplot(data_spotify_merged$duration_s,  main = "Duration")
+boxplot(data_spotify_merged$loudness,     main = "Loudness")
+boxplot(data_spotify_merged$tempo,        main = "Tempo")
+boxplot(data_spotify_merged$speechiness,  main = "Speechiness")
+boxplot(data_spotify_merged$liveness,     main = "Liveness")
+```
+
+```{r}
+# Check extreme durations
+range(data_spotify_merged$duration_s)
+
+# How many songs are over 10 minutes (600 seconds) and equal to 0 seconds?
+sum(data_spotify_merged$duration_s > 600)
+sum(data_spotify_merged$duration_s == 0)
+```
+
+```{r}
+# Check extreme loudness
+range(data_spotify_merged$loudness)
+
+# How many songs below -35 dB?
+sum(data_spotify_merged$loudness < -35)
+```
+```{r}
+# How many songs with tempo of 0?
+sum(data_spotify_merged$tempo == 0)
+```
+
+```{r}
+#Data cleaning based on the above explanation
+data_spotify_clean <- data_spotify_merged[
+  data_spotify_merged$duration_s > 0 &
+  data_spotify_merged$duration_s <= 600 &
+  data_spotify_merged$loudness >= -35 &
+  data_spotify_merged$tempo != 0, 
+]
+
+# Verify
+nrow(data_spotify_merged)  # Count before
+nrow(data_spotify_clean)   # Count after
+```
+
+
+# Clustering Research Question
+
+The goal of this analysis is to determine whether natural groupings of Spotify tracks emerge from their audio features and whether these clusters align with genre labels.
+
+```{r}
+# Clustering Analysis
+
+# audio features for clustering
+cluster_vars <- data_spotify_clean[, c(
+  "danceability",
+  "energy",
+  "loudness",
+  "speechiness",
+  "acousticness",
+  "instrumentalness",
+  "liveness",
+  "valence",
+  "tempo"
+)]
+
+str(cluster_vars)
+```
+```{r}
+# Standardize audio features before clustering
+cluster_scaled <- scale(cluster_vars)
+
+# Check result
+summary(cluster_scaled)
+```
+
+
+
+
+
+
+```{r}
+# Elbow Method to find optimal K
+set.seed(597)
+wss <- numeric(10)
+
+for (k in 1:10) {
+  kmeans_model <- kmeans(
+    cluster_scaled,
+    centers = k,
+    nstart = 20,
+    iter.max = 50
+  )
+  wss[k] <- kmeans_model$tot.withinss
+}
+
+plot(1:10, wss, type = "b",
+     xlab = "Number of Clusters (K)",
+     ylab = "Within-Cluster Sum of Squares",
+     main = "Elbow Method")
+```
+```{r}
+# Final K-means clustering
+set.seed(597)
+
+kmeans_final <- kmeans(
+  cluster_scaled,
+  centers = 4,
+  nstart = 25,
+  iter.max = 50
+)
+
+# Add cluster labels to dataset
+data_spotify_clean$cluster <- kmeans_final$cluster
+
+# Check cluster sizes
+table(data_spotify_clean$cluster)
+```
+
+
+```{r}
+# Use PCA for visualization (2D plot)
+pca_vis <- prcomp(cluster_scaled)
+
+# Create a dataframe for plotting
+pca_df <- data.frame(
+  PC1 = pca_vis$x[,1],
+  PC2 = pca_vis$x[,2],
+  cluster = as.factor(data_spotify_clean$cluster)
+)
+
+# Plot clusters
+plot(pca_df$PC1, pca_df$PC2,
+     col = pca_df$cluster,
+     pch = 16,
+     main = "K-means Clusters (K = 4)",
+     xlab = "PC1",
+     ylab = "PC2")
+```
+
+```{r}
+# Mean values of each feature per cluster
+cluster_summary <- aggregate(cluster_vars,
+                             by = list(cluster = data_spotify_clean$cluster),
+                             FUN = mean)
+
+cluster_summary
+```
+
+```{r}
+# Compare clusters with genres
+# table(data_spotify_clean$cluster, data_spotify_clean$track_genre)
+```
+
+```{r}
+# ============================
+# Cluster vs Genre (Top Genres)
+# ============================
+
+library(dplyr)
+
+top_genres <- data_spotify_clean %>%
+  group_by(cluster, track_genre) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(cluster, desc(count)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 5)
+top_genres
+```
+
+# Conclusion
+
+The clustering analysis identified four distinct groups of Spotify tracks based on their audio features. Cluster 2 represents softer and more acoustic tracks, while Clusters 3 and 4 capture more energetic and less acoustic songs. Cluster 1 shows relatively higher speechiness and vocal-heavy characteristics. Overall, the clusters are musically meaningful and partially align with genre labels, although genre is not explained perfectly by audio features alone.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
