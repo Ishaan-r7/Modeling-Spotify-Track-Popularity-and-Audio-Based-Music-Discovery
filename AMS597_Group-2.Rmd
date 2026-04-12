@@ -3,8 +3,9 @@ title: "AMS597_Group-2"
 author: "Ishaan Reddy, Krupesh Rajendrakumar Desai, Tan Thien Huynh"
 date: "2026-03-15"
 output:
-  word_document: default
   html_document: default
+  word_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -12,10 +13,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-#Data Preprocessing
+# Data Preprocessing
 
 ```{r}
-data_spotify <- read.csv("/Users/ishaa/Documents/SBU/SBU_Sem-2/Stats Computing/Project/dataset.csv")
+data_spotify <- read.csv("./dataset.csv")
 head(data_spotify)
 ```
 
@@ -112,10 +113,10 @@ sum(data_spotify_merged$tempo == 0)
 ```
 
 
-#Remove outliers from the data_spotify_merged from columns duration_s, loudness and tempo. It is because of the following reasons mentioned below:
-#1. 551 songs were over 600 seconds and 1 song equal to 0, which is unusual for an avg song.
-#2. 191 songs were under -35 dB which is real silence and doesn't depict a song.
-#3. 157 songs has 0 tempo (Beat per minute). It is impossible to have a song with 0 beats.
+# Remove outliers from the data_spotify_merged from columns duration_s, loudness and tempo. It is because of the following reasons mentioned below:
+# 1. 551 songs were over 600 seconds and 1 song equal to 0, which is unusual for an avg song.
+# 2. 191 songs were under -35 dB which is real silence and doesn't depict a song.
+# 3. 157 songs has 0 tempo (Beat per minute). It is impossible to have a song with 0 beats.
 
 
 ```{r}
@@ -141,7 +142,6 @@ summary(data_spotify_clean)
 
 
 ```{r}
-install.packages("corrplot")
 library(corrplot)
 ```
 
@@ -189,7 +189,7 @@ boxplot(popularity ~ explicit, data = data_spotify_clean,
 ```
 
 
-#Introduction & Objective
+# Introduction & Objective
 This analysis uses the Spotify Tracks Dataset, publicly available on Kaggle, containing 114,000 tracks spanning 125 genres with 20 variables per observation. Each track includes metadata (track name, artist, album, genre), audio features (danceability, energy, loudness, speechiness, acousticness, instrumentalness, liveness, valence, tempo), and structural attributes (duration, key, mode, time signature, explicit content). The popularity variable is a Spotify-assigned score from 0 to 100 based on recent play counts. During preprocessing, duplicate track IDs were resolved by merging genre labels into a comma-separated list per track, reducing the dataset to 90,461 unique tracks. An additional 881 rows were removed due to invalid values — songs with zero or unrealistically long durations (>600 seconds), near-silent loudness (< -35 dB), and zero tempo — yielding a final cleaned dataset of 89,580 tracks. Exploratory analysis revealed that popularity is right-skewed with most tracks scoring low, approximately 91% of tracks are non-explicit, and notable correlations exist between energy & loudness (positive) and energy & acousticness (negative).
 
 This analysis addresses three distinct research questions:
@@ -200,3 +200,200 @@ This analysis addresses three distinct research questions:
 
 3. Unsupervised Clustering: Do natural groupings of tracks emerge purely from their audio profiles, and how well do these align with known genre labels? This is explored using clustering methods, evaluated against the track_genre variable.
 
+
+# Predicting Popularity With PCA-Based Audio Features
+
+## Why PC Scores Are The Proper PCA Input
+
+- PC1-PC4 is the best PCA choice because it keeps the component structure intact while retaining enough variance for a compact, interpretable model. \
+- Each PC score already combines positive and negative loadings into one contrast, so splitting loadings would break the PCA meaning and make the regression less consistent.
+
+```{r pca-regression-setup}
+pca_audio_features <- c(
+  "danceability", "energy", "loudness", "speechiness",
+  "acousticness", "instrumentalness", "liveness",
+  "valence", "tempo"
+)
+
+pca_model_data <- data_spotify_clean[, c("popularity", pca_audio_features, "duration_s")]
+
+set.seed(597)
+train_index <- sample(
+  seq_len(nrow(pca_model_data)),
+  size = floor(0.8 * nrow(pca_model_data))
+)
+
+train_data <- pca_model_data[train_index, ]
+test_data <- pca_model_data[-train_index, ]
+
+pca_train <- prcomp(
+  train_data[, pca_audio_features],
+  center = TRUE,
+  scale. = TRUE
+)
+
+train_scores_all <- as.data.frame(pca_train$x)
+test_scores_all <- as.data.frame(
+  predict(pca_train, newdata = test_data[, pca_audio_features])
+)
+
+train_scores <- as.data.frame(train_scores_all[, 1:4])
+test_scores <- as.data.frame(test_scores_all[, 1:4])
+
+train_scores$popularity <- train_data$popularity
+test_scores$popularity <- test_data$popularity
+
+head(train_scores)
+```
+
+**Analysis.** This setup uses the same PCA variables from the PCA report: danceability, energy, loudness, speechiness, acousticness, instrumentalness, liveness, valence, and tempo. Popularity remains the response, while duration stays separate because it reflects track format more than sound.
+
+**Insight.** Fitting PCA only on the training data is important because it avoids letting information from the test set influence the components. The test songs are then projected into the same PCA space. This makes the regression comparison fairer and closer to how the model would behave on new tracks.
+
+**Conclusion.** PCA scores are appropriate inputs for compact models. The trial stage should still compare them against original variables to see which predicts popularity better.
+
+```{r pca-regression-model}
+pca_lm <- lm(
+  popularity ~ PC1 + PC2 + PC3 + PC4,
+  data = train_scores
+)
+
+pca_predictions <- predict(pca_lm, newdata = test_scores)
+
+regression_metrics <- function(actual, predicted) {
+  data.frame(
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    MAE = mean(abs(actual - predicted)),
+    R_squared = 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  )
+}
+
+pca_metrics <- regression_metrics(
+  actual = test_scores$popularity,
+  predicted = pca_predictions
+)
+
+pca_metrics
+```
+
+**Analysis.** This model predicts popularity using only the first four PCA scores, which summarize about 72% of standardized audio-feature variance. Instead of testing individual features, it tests whether broader audio dimensions help explain popularity.
+
+**Insight.** The PCA model is compact, but compact does not mean stronger prediction. It is useful for testing broad audio dimensions, while detailed feature-level effects are better handled by regularized models.
+
+**Conclusion.** The PCA regression is a useful compact benchmark, but it should not be the main popularity model. It is best used to test whether broad audio dimensions carry predictive signal.
+
+```{r pca-vs-original-regression}
+suppressPackageStartupMessages(library(glmnet))
+
+# Common test metrics: lower RMSE/MAE is better; higher R-squared is better.
+regression_metrics <- function(actual, predicted) {
+  data.frame(
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    MAE = mean(abs(actual - predicted)),
+    R_squared = 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  )
+}
+
+# Original audio model keeps feature-level information for prediction.
+original_audio_features <- c(pca_audio_features, "duration_s")
+x_train_original <- as.matrix(train_data[, original_audio_features])
+x_test_original <- as.matrix(test_data[, original_audio_features])
+y_train <- train_data$popularity
+y_test <- test_data$popularity
+
+# PCA benchmark uses the interpretable 4-component solution from the PCA report.
+pca_lm <- lm(
+  popularity ~ PC1 + PC2 + PC3 + PC4,
+  data = train_scores
+)
+pca_predictions <- predict(pca_lm, newdata = test_scores)
+pca_linear_metrics <- regression_metrics(
+  actual = test_scores$popularity,
+  predicted = pca_predictions
+)
+
+# Ridge and Lasso use cross-validation to choose the regularization strength.
+set.seed(597)
+ridge_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 0,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+set.seed(597)
+lasso_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 1,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+ridge_predictions <- as.numeric(
+  predict(ridge_cv, newx = x_test_original, s = "lambda.min")
+)
+lasso_predictions <- as.numeric(
+  predict(lasso_cv, newx = x_test_original, s = "lambda.min")
+)
+
+model_comparison <- data.frame(
+  model = c("PCA linear benchmark", "Ridge original audio", "Lasso original audio"),
+  input_set = c(
+    "PC1-PC4",
+    "Original audio features + duration",
+    "Original audio features + duration"
+  ),
+  rbind(
+    pca_linear_metrics,
+    regression_metrics(y_test, ridge_predictions),
+    regression_metrics(y_test, lasso_predictions)
+  )
+)
+
+model_comparison
+```
+
+**Analysis.** The useful comparison is PC1-PC4 versus Ridge and Lasso on original variables. PC1-PC8 was not kept because it uses nearly the full PCA space and no longer represents meaningful reduction.
+
+**Insight.** Ridge and Lasso perform better because they keep feature-level detail and tune shrinkage through cross-validation. PCA is cleaner for summary, but PC1-PC4 loses predictive information.
+
+**Conclusion.** Use Lasso as the main prediction model, Ridge as a stable comparison, and PC1-PC4 only as a compact PCA benchmark. A fold-sensitivity check with 3, 5, and 10 folds gave the same rounded results.
+
+```{r lasso-selected-features}
+set.seed(597)
+lasso_cv <- cv.glmnet(
+  x_train_original,
+  y_train,
+  alpha = 1,
+  nfolds = 5,
+  standardize = TRUE
+)
+
+lasso_coefficients <- coef(lasso_cv, s = "lambda.min")
+selected_lasso_features <- data.frame(
+  feature = rownames(lasso_coefficients),
+  coefficient = as.numeric(lasso_coefficients)
+)
+selected_lasso_features <- selected_lasso_features[
+  selected_lasso_features$coefficient != 0,
+]
+selected_lasso_features$coefficient <- round(
+  selected_lasso_features$coefficient,
+  4
+)
+
+selected_lasso_features
+```
+
+**Analysis.** The Lasso output identifies which original variables remain after regularization. These selected coefficients answer the main research question more directly than PCA because each coefficient still maps to a specific audio feature.
+
+**Insight.** Lasso is easier to interpret than Ridge for feature selection because it can shrink weak predictors exactly to zero. Ridge keeps all variables but stabilizes their effects.
+
+**Conclusion.** Use Lasso to discuss the strongest individual predictors, Ridge for stable prediction, and PCA only as a compact audio-dimension comparison.
+
+## 1. Which Audio Features Best Predict Popularity?
+
+- The strongest audio predictors are instrumentalness, valence, danceability, speechiness, and loudness. \
+- Danceability and loudness have positive relationships with predicted popularity, while instrumentalness, valence, and speechiness have negative relationships. However, the best model explains only about 3.3% of popularity variation, so audio features alone are weak predictors.
