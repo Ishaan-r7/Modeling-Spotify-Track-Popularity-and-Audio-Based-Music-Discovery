@@ -8,50 +8,17 @@ date: "2026-04-12"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Data Preprocessing
-
 ```{r}
-data_spotify <- read.csv("dataset.csv")
-head(data_spotify)
-```
+library(here)
+# Load dataset
+data_spotify <- read.csv("./dataset.csv")
 
-
-
-
-```{r}
-print("Structure and Data Types:")
-str(data_spotify)
-```
-
-
-```{r}
-#Check if any columns have null values
-colSums(is.na(data_spotify))
-```
-
-
-```{r}
-#Convert the duration from ms to s
+# Preprocessing
 data_spotify$duration_s <- data_spotify$duration_ms / 1000
-
-# Drop the original duration_ms column
 data_spotify$duration_ms <- NULL
-
-# Convert Explicit column to Boolean values from chr
 data_spotify$explicit <- as.logical(data_spotify$explicit)
-
-#Drop index column
 data_spotify$X <- NULL
 
-head(data_spotify)
-```
-
-```{r}
-sum(duplicated(data_spotify$track_id))
-```
-
-```{r}
-# Merge rows by track_id, combining genres into a single comma-separated string
 data_spotify_merged <- aggregate(track_genre ~ track_id + track_name + artists + 
                                    album_name + popularity + duration_s + explicit + 
                                    danceability + energy + key + loudness + mode + 
@@ -60,59 +27,12 @@ data_spotify_merged <- aggregate(track_genre ~ track_id + track_name + artists +
                                  data = data_spotify, 
                                  FUN = function(x) paste(sort(unique(x)), collapse = ", "))
 
-# Verify
-nrow(data_spotify_merged) 
-```
-
-```{r}
-print("Summary Statistics:")
-summary(data_spotify_merged)
-```
-
-```{r}
-# Boxplots to visualize outliers
-par(mfrow = c(2, 3))
-boxplot(data_spotify_merged$popularity,   main = "Popularity")
-boxplot(data_spotify_merged$duration_s,  main = "Duration")
-boxplot(data_spotify_merged$loudness,     main = "Loudness")
-boxplot(data_spotify_merged$tempo,        main = "Tempo")
-boxplot(data_spotify_merged$speechiness,  main = "Speechiness")
-boxplot(data_spotify_merged$liveness,     main = "Liveness")
-```
-
-```{r}
-# Check extreme durations
-range(data_spotify_merged$duration_s)
-
-# How many songs are over 10 minutes (600 seconds) and equal to 0 seconds?
-sum(data_spotify_merged$duration_s > 600)
-sum(data_spotify_merged$duration_s == 0)
-```
-
-```{r}
-# Check extreme loudness
-range(data_spotify_merged$loudness)
-
-# How many songs below -35 dB?
-sum(data_spotify_merged$loudness < -35)
-```
-```{r}
-# How many songs with tempo of 0?
-sum(data_spotify_merged$tempo == 0)
-```
-
-```{r}
-#Data cleaning based on the above explanation
 data_spotify_clean <- data_spotify_merged[
   data_spotify_merged$duration_s > 0 &
   data_spotify_merged$duration_s <= 600 &
   data_spotify_merged$loudness >= -35 &
   data_spotify_merged$tempo != 0, 
 ]
-
-# Verify
-nrow(data_spotify_merged)  # Count before
-nrow(data_spotify_clean)   # Count after
 ```
 
 
@@ -121,9 +41,7 @@ nrow(data_spotify_clean)   # Count after
 The goal of this analysis is to determine whether natural groupings of Spotify tracks emerge from their audio features and whether these clusters align with genre labels.
 
 ```{r}
-# Clustering Analysis
-
-# audio features for clustering
+# Audio features for clustering
 cluster_vars <- data_spotify_clean[, c(
   "danceability",
   "energy",
@@ -137,53 +55,74 @@ cluster_vars <- data_spotify_clean[, c(
 )]
 
 str(cluster_vars)
+summary(cluster_vars)
 ```
+
+
 ```{r}
 # Standardize audio features before clustering
+
 cluster_scaled <- scale(cluster_vars)
 
-# Check result
 summary(cluster_scaled)
 ```
 
 
-
-
-
-
 ```{r}
-# Elbow Method to find optimal K
+#Choosing the number of clusters(K)
+
+# 1. Elbow Method
 set.seed(597)
+
 wss <- numeric(10)
 
 for (k in 1:10) {
-  kmeans_model <- kmeans(
-    cluster_scaled,
-    centers = k,
-    nstart = 20,
-    iter.max = 50
-  )
-  wss[k] <- kmeans_model$tot.withinss
+  km <- kmeans(cluster_scaled, centers = k, nstart = 10, iter.max = 50)
+  wss[k] <- km$tot.withinss
 }
 
 plot(1:10, wss, type = "b",
      xlab = "Number of Clusters (K)",
      ylab = "Within-Cluster Sum of Squares",
      main = "Elbow Method")
+
+# 2. Silhouette Method (on random 5000 samples for speed)
+
+library(cluster)
+
+set.seed(597)
+
+sample_idx <- sample(1:nrow(cluster_scaled), 5000)
+cluster_sample <- cluster_scaled[sample_idx, ]
+
+avg_sil <- rep(NA, 10)
+
+for (k in 2:10) {
+  km <- kmeans(cluster_sample, centers = k, nstart = 10, iter.max = 50)
+  sil <- silhouette(km$cluster, dist(cluster_sample))
+  avg_sil[k] <- mean(sil[, 3])
+}
+
+plot(2:10, avg_sil[2:10], type = "b",
+     xlab = "Number of Clusters (K)",
+     ylab = "Average Silhouette Width",
+     main = "Silhouette Method (Sample of 5000 Tracks)")
 ```
+
+
 ```{r}
-# Final K-means clustering
+# Final K-means clustering with K=4
+
 set.seed(597)
 
 kmeans_final <- kmeans(
   cluster_scaled,
   centers = 4,
   nstart = 25,
-  iter.max = 50
+  iter.max = 100
 )
 
-# Add cluster labels to dataset
-data_spotify_clean$cluster <- kmeans_final$cluster
+data_spotify_clean$cluster <- as.factor(kmeans_final$cluster)
 
 # Check cluster sizes
 table(data_spotify_clean$cluster)
@@ -191,73 +130,53 @@ table(data_spotify_clean$cluster)
 
 
 ```{r}
-# Use PCA for visualization (2D plot)
-pca_vis <- prcomp(cluster_scaled)
+#Interpret the Scaled clusters
 
-# Create a dataframe for plotting
-pca_df <- data.frame(
-  PC1 = pca_vis$x[,1],
-  PC2 = pca_vis$x[,2],
-  cluster = as.factor(data_spotify_clean$cluster)
+cluster_centers_scaled <- aggregate(as.data.frame(cluster_scaled),
+                                    by = list(cluster = data_spotify_clean$cluster),
+                                    FUN = mean)
+
+cluster_centers_scaled
+```
+
+
+```{r}
+#Genre Alignment
+
+#1. Create a simplified primary genre column (first genre listed)
+data_spotify_clean$primary_genre <- trimws(
+  sapply(strsplit(as.character(data_spotify_clean$track_genre), ","), `[`, 1)
 )
 
-# Plot clusters
-plot(pca_df$PC1, pca_df$PC2,
-     col = pca_df$cluster,
-     pch = 16,
-     main = "K-means Clusters (K = 4)",
-     xlab = "PC1",
-     ylab = "PC2")
-```
-
-```{r}
-# Mean values of each feature per cluster
-cluster_summary <- aggregate(cluster_vars,
-                             by = list(cluster = data_spotify_clean$cluster),
-                             FUN = mean)
-
-cluster_summary
-```
-
-```{r}
-# Compare clusters with genres
-# table(data_spotify_clean$cluster, data_spotify_clean$track_genre)
-```
-
-```{r}
-# ============================
-# Cluster vs Genre (Top Genres)
-# ============================
-
+#2. Top genres per cluster
 library(dplyr)
 
 top_genres <- data_spotify_clean %>%
-  group_by(cluster, track_genre) %>%
+  group_by(cluster, primary_genre) %>%
   summarise(count = n(), .groups = "drop") %>%
   arrange(cluster, desc(count)) %>%
   group_by(cluster) %>%
   slice_head(n = 5)
+
 top_genres
+
+#3. Purity
+genre_table <- table(data_spotify_clean$cluster, data_spotify_clean$primary_genre)
+
+cluster_purity <- apply(genre_table, 1, max) / rowSums(genre_table)
+cluster_purity
+
+overall_purity <- sum(apply(genre_table, 1, max)) / sum(genre_table)
+overall_purity
 ```
 
-# Conclusion
 
-The clustering analysis identified four distinct groups of Spotify tracks based on their audio features. Cluster 2 represents softer and more acoustic tracks, while Clusters 3 and 4 capture more energetic and less acoustic songs. Cluster 1 shows relatively higher speechiness and vocal-heavy characteristics. Overall, the clusters are musically meaningful and partially align with genre labels, although genre is not explained perfectly by audio features alone.
+**Interpretation of findings and conclusion to the research question “Do natural groupings of tracks emerge from audio features, and how well do these align with genre labels?”**
 
+Research Question 3 examined whether tracks naturally cluster based on their audio characteristics and whether these clusters correspond to genre labels. K-means clustering was applied to nine standardized audio features, with the number of clusters selected using both the Elbow Method and silhouette analysis. While the silhouette score was highest at K=2, this solution was considered too coarse to provide meaningful segmentation. Based on a balance between statistical criteria and interpretability, K=4 was selected as the final clustering solution.
 
+The resulting clusters revealed clear and interpretable musical structures. One cluster was characterized by high speechiness, corresponding to vocal-heavy or speech-driven tracks such as rap or spoken-word content. Another cluster exhibited very low energy and high acousticness, capturing soft, acoustic, or instrumental music such as classical and ambient genres. A third cluster, which contained the largest number of tracks, showed high danceability and moderate energy, representing mainstream and dance-oriented music. The final cluster was defined by high energy and loudness with very low acousticness, corresponding to high-intensity genres such as electronic or club-oriented music. These patterns demonstrate that clustering based purely on audio features produces meaningful groupings that reflect underlying musical characteristics.
 
+To evaluate how well these clusters align with genre labels, a primary genre was assigned to each track and cluster purity was computed. The results showed relatively low alignment, with cluster purity values ranging from approximately 2.4% to 11.5% and an overall purity of 3.8%. Although certain clusters — particularly the acoustic cluster — showed some coherence with genres such as ambient and classical, most clusters contained a diverse mix of genres. For example, high-energy clusters grouped together genres such as metal, electronic, and dance music, while danceable clusters combined genres like salsa, afrobeat, and pop.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Overall, these findings indicate that natural groupings do emerge in the audio feature space, and these clusters are musically meaningful. However, the weak alignment with genre labels suggests that genre classification is not solely determined by audio characteristics. Instead, genre appears to reflect broader cultural, stylistic, and contextual factors that extend beyond measurable acoustic properties.
